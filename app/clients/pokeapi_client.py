@@ -52,7 +52,7 @@ class PokeAPIClient:
         
         return PokemonSpeciesData(
             name=data['name'],
-            flavor_text=english_description,
+            description=english_description, 
             habitat=data.get('habitat', {}).get('name'),
             is_legendary=data['is_legendary']
         )
