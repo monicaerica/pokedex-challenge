@@ -16,6 +16,15 @@ MOCK_POKEAPI_SUCCESS = {
     ]
 }
 
+MOCK_POKEAPI_DITTO = {
+    "name": "ditto",
+    "is_legendary": False,
+    "habitat": {"name": "urban"},
+    "flavor_text_entries": [
+        {"flavor_text": "It can transform into anything.", "language": {"name": "en"}}
+    ]
+}
+
 @pytest.mark.asyncio
 async def test_successful_fetch_and_data_extraction(httpx_mock):
     """Verifies the client successfully extracts the English description and required fields."""
@@ -69,3 +78,137 @@ async def test_pokeapi_internal_error_raises_503(httpx_mock):
         await client.get_pokemon_species("internalerror")
     
     assert excinfo.value.status_code == 503
+
+@pytest.mark.httpx_mock(can_send_already_matched_responses=True)
+@pytest.mark.asyncio
+async def test_pokemon_caching_prevents_redundant_calls(httpx_mock):
+    """
+    Verifies that calling get_pokemon_species() with the same name twice results in only 
+    ONE network call, proving the cache is active.
+    """
+    mewtwo_call_count = [0]
+    ditto_call_count = [0]
+    
+    def count_mewtwo(request):
+        mewtwo_call_count[0] += 1
+        return httpx.Response(
+            status_code=200,
+            json=MOCK_POKEAPI_SUCCESS
+        )
+    
+    def count_ditto(request):
+        ditto_call_count[0] += 1
+        return httpx.Response(
+            status_code=200,
+            json=MOCK_POKEAPI_DITTO
+        )
+
+    # ARRANGE: Set up callbacks to count network calls
+    httpx_mock.add_callback(
+        url="https://pokeapi.co/api/v2/pokemon-species/mewtwo",
+        callback=count_mewtwo,
+    )
+    
+    httpx_mock.add_callback(
+        url="https://pokeapi.co/api/v2/pokemon-species/ditto",
+        callback=count_ditto,
+    )
+    
+    client = PokeAPIClient()
+
+    # ACT 1: First call for mewtwo (cache miss - network call #1)
+    result1 = await client.get_pokemon_species("mewtwo")
+    assert mewtwo_call_count[0] == 1
+    assert result1.name == "mewtwo"
+
+    # ACT 2: Second call for mewtwo with SAME name (cache hit - NO network call)
+    result2 = await client.get_pokemon_species("mewtwo")
+    assert result2.name == result1.name
+    assert result2.description == result1.description
+    assert mewtwo_call_count[0] == 1  # Should still be 1!
+
+    # ACT 3: Third call with DIFFERENT Pokemon (cache miss - network call for ditto)
+    result3 = await client.get_pokemon_species("ditto")
+    assert result3.name == "ditto"
+    assert ditto_call_count[0] == 1  # Ditto should have been called once
+    assert mewtwo_call_count[0] == 1  # Mewtwo count should not have changed
+
+    # Clean up
+    client.clear_cache()
+
+@pytest.mark.httpx_mock(can_send_already_matched_responses=True)
+@pytest.mark.asyncio
+async def test_pokemon_caching_is_case_insensitive(httpx_mock):
+    """
+    Verifies that Pokemon names are cached in a case-insensitive manner.
+    'Mewtwo', 'mewtwo', and 'MEWTWO' should all hit the same cache entry.
+    """
+    call_count = [0]
+    
+    def count_and_respond(request):
+        call_count[0] += 1
+        return httpx.Response(
+            status_code=200,
+            json=MOCK_POKEAPI_SUCCESS
+        )
+
+    # ARRANGE
+    httpx_mock.add_callback(
+        url="https://pokeapi.co/api/v2/pokemon-species/mewtwo",
+        callback=count_and_respond,
+    )
+    client = PokeAPIClient()
+
+    # ACT: Call with different casings
+    result1 = await client.get_pokemon_species("Mewtwo")
+    assert call_count[0] == 1
+
+    result2 = await client.get_pokemon_species("MEWTWO")
+    assert call_count[0] == 1  # Should still be 1 (cache hit)
+
+    result3 = await client.get_pokemon_species("mewtwo")
+    assert call_count[0] == 1  # Should still be 1 (cache hit)
+
+    # All results should be identical
+    assert result1.name == result2.name == result3.name
+
+    # Clean up
+    client.clear_cache()
+
+@pytest.mark.httpx_mock(can_send_already_matched_responses=True)
+@pytest.mark.asyncio
+async def test_failed_requests_are_not_cached(httpx_mock):
+    """
+    Verifies that failed requests (404, 500, network errors) are NOT cached,
+    allowing retries on subsequent calls.
+    """
+    call_count = [0]
+    
+    def count_and_fail(request):
+        call_count[0] += 1
+        # First call returns 500, second call returns success
+        if call_count[0] == 1:
+            return httpx.Response(status_code=500, json={"error": "Internal error"})
+        else:
+            return httpx.Response(status_code=200, json=MOCK_POKEAPI_SUCCESS)
+
+    # ARRANGE
+    httpx_mock.add_callback(
+        url="https://pokeapi.co/api/v2/pokemon-species/mewtwo",
+        callback=count_and_fail,
+    )
+    client = PokeAPIClient()
+
+    # ACT 1: First call fails with 500
+    with pytest.raises(APIClientError):
+        await client.get_pokemon_species("mewtwo")
+    
+    assert call_count[0] == 1
+
+    # ACT 2: Second call should retry (not use cache) and succeed
+    result = await client.get_pokemon_species("mewtwo")
+    assert call_count[0] == 2  # Network was called again
+    assert result.name == "mewtwo"
+
+    # Clean up
+    client.clear_cache()

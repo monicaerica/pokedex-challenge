@@ -1,7 +1,10 @@
 import httpx
-from functools import lru_cache
+from typing import Dict
 from app.models import PokemonSpeciesData
 from fastapi import HTTPException
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Define a custom exception for client errors (Used for 5xx errors)
 class APIClientError(HTTPException):
@@ -13,16 +16,34 @@ class PokeAPIClient:
 
     def __init__(self):
         self.client = httpx.AsyncClient(base_url=self.BASE_URL, timeout=5.0)
+        # Simple in-memory cache: {pokemon_name: raw_species_data}
+        # 1 - Simple - Just a dictionary, no complex async cache libraries needed
+        # 2 - Works with async - No coroutine reuse issues
+        # 3 - Only caches successes - Exceptions prevent caching, so rate limits trigger retries
+        self._cache: Dict[str, dict] = {}
 
-    @lru_cache(maxsize=128)
     async def _fetch_species_data(self, pokemon_name: str) -> dict:
         """Internal method to fetch raw species data with caching and error handling."""
-        url = f"/pokemon-species/{pokemon_name.lower()}"
+        # Normalize the name to lowercase for consistent caching
+        normalized_name = pokemon_name.lower()
+        
+        # Check cache first
+        if normalized_name in self._cache:
+            logger.info(f"Cache hit for Pokemon: {normalized_name}")
+            return self._cache[normalized_name]
+        
+        # Cache miss - make network call
+        logger.info(f"Cache miss for Pokemon: {normalized_name}")
+        url = f"/pokemon-species/{normalized_name}"
         
         try:
             response = await self.client.get(url)
-            response.raise_for_status() # Raises for 4xx/5xx status codes
-            return response.json()
+            response.raise_for_status()  # Raises for 4xx/5xx status codes
+            data = response.json()
+            
+            # Store in cache (only successful results get cached)
+            self._cache[normalized_name] = data
+            return data
         
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 404:
@@ -34,7 +55,6 @@ class PokeAPIClient:
              # Handle network failures/timeouts
             raise APIClientError(status_code=503, detail=f"PokeAPI network error: {str(e)}")
 
-
     async def get_pokemon_species(self, name: str) -> PokemonSpeciesData:
         """Fetches, processes, and validates the core Pokemon species data."""
         data = await self._fetch_species_data(name)
@@ -42,7 +62,7 @@ class PokeAPIClient:
         # Data Extraction Logic (Filter for the first English description)
         english_description = next(
             (
-                entry['flavor_text'].replace('\n', ' ').replace('\f', ' ') # Clean up newlines/form feeds
+                entry['flavor_text'].replace('\n', ' ').replace('\f', ' ')  # Clean up newlines/form feeds
                 for entry in data.get('flavor_text_entries', [])
                 if entry['language']['name'] == 'en'
             ),
@@ -56,3 +76,7 @@ class PokeAPIClient:
             habitat=data.get('habitat', {}).get('name'),
             is_legendary=data['is_legendary']
         )
+    
+    def clear_cache(self):
+        """Clear the Pokemon species cache. Useful for testing."""
+        self._cache.clear()
