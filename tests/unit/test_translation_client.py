@@ -68,3 +68,52 @@ async def test_api_network_error_raises_503(httpx_mock):
     
     assert excinfo.value.status_code == 503
     assert "network error" in excinfo.value.detail.lower()
+
+@pytest.mark.httpx_mock(can_send_already_matched_responses=True)
+@pytest.mark.asyncio
+async def test_translation_caching_prevents_redundant_calls(httpx_mock):
+    """
+    Verifies that calling translate() with the same arguments twice results in only 
+    ONE network call, proving the cache is active.
+    """
+    call_count = [0]
+    
+    def count_and_respond(request):
+        call_count[0] += 1
+        return httpx.Response(
+            status_code=200,
+            json=MOCK_TRANSLATION_SUCCESS
+        )
+
+    # ARRANGE: Allow the callback to match multiple requests
+    httpx_mock.add_callback(
+        callback=count_and_respond,
+        url="https://api.funtranslations.com/translate/yoda",
+    )
+    client = TranslationClient()
+    text_to_translate = "The cache is important for rate limits."
+
+    # ACT 1: First call (cache miss - should trigger network call)
+    result1 = await client.translate(text_to_translate, "yoda")
+    
+    # ASSERT 1
+    assert call_count[0] == 1  # Network called once
+    assert result1 == "Yoda speaks, you listen."
+
+    # ACT 2: Second call with SAME arguments (cache hit - NO network call)
+    result2 = await client.translate(text_to_translate, "yoda")
+    
+    # ASSERT 2
+    assert result2 == result1  # Results must be identical
+    assert call_count[0] == 1  # Network call count should NOT have increased
+
+    # ACT 3: Third call with DIFFERENT arguments (cache miss - should trigger network call)
+    text_2 = "A different request."
+    result3 = await client.translate(text_2, "yoda")
+
+    # ASSERT 3
+    assert call_count[0] == 2  # Network call count should increase to 2
+    assert result3 == "Yoda speaks, you listen."
+
+    # Clean up
+    client.clear_cache()
