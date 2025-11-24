@@ -1,12 +1,12 @@
 from app.clients.pokeapi_client import PokeAPIClient
-from app.models import PokemonResponse 
+from app.clients.translation_client import TranslationClient
+from app.models import PokemonResponse, TranslatedPokemonResponse
 
 class PokemonService:
-    # Use **kwargs to allow the service to be instantiated with only the poke_client for now, 
-    # but be ready to accept the translation_client later.
-    def __init__(self, poke_client: PokeAPIClient, **kwargs):
+    # Service now requires both clients via Dependency Injection
+    def __init__(self, poke_client: PokeAPIClient, translation_client: TranslationClient):
         self._poke_client = poke_client
-        # We will add self._translation_client = kwargs.get('translation_client') later
+        self._translation_client = translation_client
 
     async def get_basic_info(self, name: str) -> PokemonResponse:
         """
@@ -23,7 +23,33 @@ class PokemonService:
             is_legendary=species_data.is_legendary
         )
 
-    # Placeholder for Endpoint 2 logic to be implemented later
-    async def get_translated_info(self, name: str):
-        # We raise this exception so the test for the translated endpoint fails initially
-        raise NotImplementedError("Translated endpoint not yet implemented.")
+    async def get_translated_info(self, name: str) -> TranslatedPokemonResponse:
+        """
+        Endpoint 2: Fetches data and applies the translation rule.
+        Rule: Legendary OR Habitat is 'cave' -> Yoda. Otherwise -> Shakespeare.
+        """
+        species_data = await self._poke_client.get_pokemon_species(name)
+        
+        # --- CORE BUSINESS LOGIC: Determine Translation Style ---
+        
+        is_cave_habitat = species_data.habitat == "cave"
+        
+        if species_data.is_legendary or is_cave_habitat:
+            translation_style = "yoda"
+        else:
+            translation_style = "shakespeare"
+            
+        # 2. Get the translation (exception handling is in the client)
+        # Note: We await the translation call which will trigger the robust cache mechanism.
+        translated_description = await self._translation_client.translate(
+            species_data.description, 
+            translation_style
+        )
+        
+        # 3. Map to the final response model
+        return TranslatedPokemonResponse(
+            name=species_data.name,
+            description=translated_description, # Use the translated text here
+            habitat=species_data.habitat,
+            is_legendary=species_data.is_legendary
+        )

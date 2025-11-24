@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import AsyncMock
 from app.services.pokemon_service import PokemonService
-from app.models import PokemonResponse, PokemonSpeciesData
+from app.models import PokemonResponse, PokemonSpeciesData, TranslatedPokemonResponse
 from app.clients.translation_client import APIClientError
 
 # Sample data returned by the MOCKED client
@@ -32,19 +32,20 @@ def pokemon_service(mock_clients):
 
 
 @pytest.mark.asyncio
-async def test_get_basic_info_success(pokemon_service_basic, mock_poke_client):
+async def test_get_basic_info_success(pokemon_service, mock_clients):
     """
     Verifies that the service correctly calls the client and maps the result 
     to the public PokemonResponse model.
     """
-    # ARRANGE is handled by the fixtures (mocking the client)
+    # ARRANGE - unpack the clients from the fixture
+    poke_client, translation_client = mock_clients
     
     # ACT
-    result = await pokemon_service_basic.get_basic_info("mewtwo")
+    result = await pokemon_service.get_basic_info("mewtwo")
     
     # ASSERT
     # 1. Check the client was called correctly
-    mock_poke_client.get_pokemon_species.assert_called_once_with("mewtwo")
+    poke_client.get_pokemon_species.assert_called_once_with("mewtwo")
     
     # 2. Check the output type is the public contract
     assert isinstance(result, PokemonResponse)
@@ -90,7 +91,7 @@ async def test_yoda_translation_for_cave_habitat(pokemon_service, mock_clients):
     poke_client, translation_client = mock_clients
     
     # Configure the mock to return Cave habitat, but NOT legendary
-    MOCK_SPECIES_DATA_CAVE = MOCK_SPECIES_DATA.copy(update={'is_legendary': False, 'habitat': 'cave'})
+    MOCK_SPECIES_DATA_CAVE = MOCK_SPECIES_DATA.model_copy(update={'is_legendary': False, 'habitat': 'cave'})
     poke_client.get_pokemon_species.return_value = MOCK_SPECIES_DATA_CAVE
     translation_client.translate.return_value = "In cave lives, this one."
     
@@ -114,7 +115,7 @@ async def test_shakespeare_translation_for_normal_pokemon(pokemon_service, mock_
     poke_client, translation_client = mock_clients
     
     # Configure the mock to return Normal data (e.g., grassland)
-    MOCK_SPECIES_DATA_NORMAL = MOCK_SPECIES_DATA.copy(update={'is_legendary': False, 'habitat': 'grassland'})
+    MOCK_SPECIES_DATA_NORMAL = MOCK_SPECIES_DATA.model_copy(update={'is_legendary': False, 'habitat': 'grassland'})
     poke_client.get_pokemon_species.return_value = MOCK_SPECIES_DATA_NORMAL
     translation_client.translate.return_value = "Hark! T'was a gentle creature."
     
