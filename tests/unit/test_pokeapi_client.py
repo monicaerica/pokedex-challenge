@@ -4,8 +4,7 @@ from app.clients.pokeapi_client import PokeAPIClient, APIClientError
 from fastapi import HTTPException
 from app.models import PokemonSpeciesData
 
-# Sample raw data (A simplified version of what we need to extract from the large JSON)
-# This mock data must ensure our extraction logic works, specifically for flavor_text_entries
+
 MOCK_POKEAPI_SUCCESS = {
     "name": "mewtwo",
     "is_legendary": True,
