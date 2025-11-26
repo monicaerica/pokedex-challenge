@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 # Model for the raw Pokemon data fetched from PokeAPI (Internal Contract)
 class PokemonSpeciesData(BaseModel):
