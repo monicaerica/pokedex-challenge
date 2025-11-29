@@ -1,8 +1,8 @@
 from fastapi import FastAPI, Depends, status, HTTPException
-from app.services.pokemon_service import PokemonService
+from app.services import PokemonService
 from app.dependencies import get_pokemon_service
 from app.models import PokemonResponse, TranslatedPokemonResponse
-from app.clients.translation_client import APIClientError 
+from app.clients import APIClientError 
 
 app = FastAPI(
     title="TrueLayer Pokedex API",

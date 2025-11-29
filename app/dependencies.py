@@ -1,6 +1,6 @@
-from app.clients.pokeapi_client import PokeAPIClient
-from app.clients.translation_client import TranslationClient 
-from app.services.pokemon_service import PokemonService
+from app.clients import PokeAPIClient
+from app.clients import TranslationClient 
+from app.services import PokemonService
 from fastapi import Depends
 
 _poke_client = None

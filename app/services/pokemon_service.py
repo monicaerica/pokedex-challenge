@@ -1,5 +1,5 @@
-from app.clients.pokeapi_client import PokeAPIClient
-from app.clients.translation_client import TranslationClient
+from app.clients import PokeAPIClient
+from app.clients import TranslationClient
 from app.models import PokemonResponse, TranslatedPokemonResponse
 
 class PokemonService:
