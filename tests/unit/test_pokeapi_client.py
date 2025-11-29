@@ -3,6 +3,7 @@ import httpx
 from app.clients.pokeapi_client import PokeAPIClient, APIClientError
 from fastapi import HTTPException
 from app.models import PokemonSpeciesData
+from fakeredis.aioredis import FakeRedis
 
 
 MOCK_POKEAPI_SUCCESS = {
@@ -25,8 +26,20 @@ MOCK_POKEAPI_DITTO = {
     ]
 }
 
+@pytest.fixture
+def redis_client():
+    """Provides a fake Redis client for testing."""
+    return FakeRedis(decode_responses=True)
+    
+@pytest.fixture
+def poke_client(redis_client):
+    """Provides a PokeAPIClient with fake Redis."""
+    client = PokeAPIClient()
+    client.redis = redis_client  # Inject fake Redis
+    return client
+
 @pytest.mark.asyncio
-async def test_successful_fetch_and_data_extraction(httpx_mock):
+async def test_successful_fetch_and_data_extraction(httpx_mock, poke_client):
     """Verifies the client successfully extracts the English description and required fields."""
     # ARRANGE: Mock the external API call
     httpx_mock.add_response(
@@ -34,10 +47,9 @@ async def test_successful_fetch_and_data_extraction(httpx_mock):
         json=MOCK_POKEAPI_SUCCESS,
         status_code=200
     )
-    client = PokeAPIClient()
 
     # ACT
-    result = await client.get_pokemon_species("mewtwo")
+    result = await poke_client.get_pokemon_species("mewtwo")
 
     # ASSERT: Check if the result matches our clean internal model
     assert isinstance(result, PokemonSpeciesData)
@@ -48,40 +60,38 @@ async def test_successful_fetch_and_data_extraction(httpx_mock):
     assert result.is_legendary is True
 
 @pytest.mark.asyncio
-async def test_pokemon_not_found_raises_404(httpx_mock):
+async def test_pokemon_not_found_raises_404(httpx_mock, poke_client):
     """Test that a 404 from PokeAPI is correctly re-mapped to a FastAPI 404."""
     # ARRANGE: Mock the external API to return a 404 Not Found
     httpx_mock.add_response(
         url="https://pokeapi.co/api/v2/pokemon-species/nonexistent",
         status_code=404
     )
-    client = PokeAPIClient()
     
     # ACT & ASSERT: Expect a standard FastAPI HTTPException with status 404
     with pytest.raises(HTTPException) as excinfo:
-        await client.get_pokemon_species("nonexistent")
+        await poke_client.get_pokemon_species("nonexistent")
     
     assert excinfo.value.status_code == 404
 
 @pytest.mark.asyncio
-async def test_pokeapi_internal_error_raises_503(httpx_mock):
+async def test_pokeapi_internal_error_raises_503(httpx_mock, poke_client):
     """Test that a 500 from PokeAPI is correctly re-mapped to our custom 503 error."""
     # ARRANGE: Mock the external API to return a 500 Internal Server Error
     httpx_mock.add_response(
         url="https://pokeapi.co/api/v2/pokemon-species/internalerror",
         status_code=500
     )
-    client = PokeAPIClient()
 
     # ACT & ASSERT: Expect our custom APIClientError (HTTP 503)
     with pytest.raises(APIClientError) as excinfo:
-        await client.get_pokemon_species("internalerror")
+        await poke_client.get_pokemon_species("internalerror")
     
     assert excinfo.value.status_code == 503
 
 @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
 @pytest.mark.asyncio
-async def test_pokemon_caching_prevents_redundant_calls(httpx_mock):
+async def test_pokemon_caching_prevents_redundant_calls(httpx_mock, poke_client):
     """
     Verifies that calling get_pokemon_species() with the same name twice results in only 
     ONE network call, proving the cache is active.
@@ -113,32 +123,27 @@ async def test_pokemon_caching_prevents_redundant_calls(httpx_mock):
         url="https://pokeapi.co/api/v2/pokemon-species/ditto",
         callback=count_ditto,
     )
-    
-    client = PokeAPIClient()
 
     # ACT 1: First call for mewtwo (cache miss - network call #1)
-    result1 = await client.get_pokemon_species("mewtwo")
+    result1 = await poke_client.get_pokemon_species("mewtwo")
     assert mewtwo_call_count[0] == 1
     assert result1.name == "mewtwo"
 
     # ACT 2: Second call for mewtwo with SAME name (cache hit - NO network call)
-    result2 = await client.get_pokemon_species("mewtwo")
+    result2 = await poke_client.get_pokemon_species("mewtwo")
     assert result2.name == result1.name
     assert result2.description == result1.description
     assert mewtwo_call_count[0] == 1  # Should still be 1!
 
     # ACT 3: Third call with DIFFERENT Pokemon (cache miss - network call for ditto)
-    result3 = await client.get_pokemon_species("ditto")
+    result3 = await poke_client.get_pokemon_species("ditto")
     assert result3.name == "ditto"
     assert ditto_call_count[0] == 1  # Ditto should have been called once
     assert mewtwo_call_count[0] == 1  # Mewtwo count should not have changed
 
-    # Clean up
-    client.clear_cache()
-
 @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
 @pytest.mark.asyncio
-async def test_pokemon_caching_is_case_insensitive(httpx_mock):
+async def test_pokemon_caching_is_case_insensitive(httpx_mock, poke_client):
     """
     Verifies that Pokemon names are cached in a case-insensitive manner.
     'Mewtwo', 'mewtwo', and 'MEWTWO' should all hit the same cache entry.
@@ -157,27 +162,23 @@ async def test_pokemon_caching_is_case_insensitive(httpx_mock):
         url="https://pokeapi.co/api/v2/pokemon-species/mewtwo",
         callback=count_and_respond,
     )
-    client = PokeAPIClient()
 
     # ACT: Call with different casings
-    result1 = await client.get_pokemon_species("Mewtwo")
+    result1 = await poke_client.get_pokemon_species("Mewtwo")
     assert call_count[0] == 1
 
-    result2 = await client.get_pokemon_species("MEWTWO")
+    result2 = await poke_client.get_pokemon_species("MEWTWO")
     assert call_count[0] == 1  # Should still be 1 (cache hit)
 
-    result3 = await client.get_pokemon_species("mewtwo")
+    result3 = await poke_client.get_pokemon_species("mewtwo")
     assert call_count[0] == 1  # Should still be 1 (cache hit)
 
     # All results should be identical
     assert result1.name == result2.name == result3.name
 
-    # Clean up
-    client.clear_cache()
-
 @pytest.mark.httpx_mock(can_send_already_matched_responses=True)
 @pytest.mark.asyncio
-async def test_failed_requests_are_not_cached(httpx_mock):
+async def test_failed_requests_are_not_cached(httpx_mock, poke_client):
     """
     Verifies that failed requests (404, 500, network errors) are NOT cached,
     allowing retries on subsequent calls.
@@ -197,18 +198,14 @@ async def test_failed_requests_are_not_cached(httpx_mock):
         url="https://pokeapi.co/api/v2/pokemon-species/mewtwo",
         callback=count_and_fail,
     )
-    client = PokeAPIClient()
 
     # ACT 1: First call fails with 500
     with pytest.raises(APIClientError):
-        await client.get_pokemon_species("mewtwo")
+        await poke_client.get_pokemon_species("mewtwo")
     
     assert call_count[0] == 1
 
     # ACT 2: Second call should retry (not use cache) and succeed
-    result = await client.get_pokemon_species("mewtwo")
+    result = await poke_client.get_pokemon_species("mewtwo")
     assert call_count[0] == 2  # Network was called again
     assert result.name == "mewtwo"
-
-    # Clean up
-    client.clear_cache()

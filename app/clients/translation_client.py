@@ -1,7 +1,8 @@
 from fastapi import HTTPException
 import httpx
 import logging 
-from typing import Dict, Tuple
+import json
+import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
 
@@ -10,31 +11,30 @@ class APIClientError(HTTPException):
         super().__init__(status_code=503, detail=f"External API Error: {detail}")
 
 class TranslationClient:
-    BASE_URL = "https://api.funtranslations.com/translate" 
+    BASE_URL = "https://api.funtranslations.com/translate"
+    CACHE_TTL = 604800  # 7 days (translations are deterministic)
 
-    def __init__(self):
+    def __init__(self, redis_url: str = "redis://localhost:6379"):
         self.client = httpx.AsyncClient(base_url=self.BASE_URL, timeout=5.0)
-        # Simple in-memory cache: {(text, style): translated_text}
-        # 1 - Simple - Just a dictionary, no complex async cache libraries needed
-        # 2 - Works with async - No coroutine reuse issues
-        # 3 - Only caches successes - Exceptions prevent caching, so rate limits trigger retries
-        self._cache: Dict[Tuple[str, str], str] = {}
+        # Redis client instead of dictionary
+        self.redis = aioredis.from_url(redis_url, decode_responses=True)
 
     async def translate(self, text: str, translation_style: str) -> str:
         """Translates text with caching."""
-        cache_key = (text, translation_style)
+        cache_key = f"translation:{translation_style}:{hash(text)}"
         
-        # Check cache first
-        if cache_key in self._cache:
+        # Check cache first (Redis instead of dict)
+        cached_translation = await self.redis.get(cache_key)
+        if cached_translation:
             logger.info(f"Cache hit for: {text[:30]}...")
-            return self._cache[cache_key]
+            return cached_translation
         
         # Cache miss - make network call
         logger.info(f"Cache miss for: {text[:30]}...")
         result = await self._translate_network_call(text, translation_style)
         
         # Store in cache (only successful results get cached)
-        self._cache[cache_key] = result
+        await self.redis.setex(cache_key, self.CACHE_TTL, result)
         return result
 
     async def _translate_network_call(self, text: str, translation_style: str) -> str:
@@ -64,6 +64,12 @@ class TranslationClient:
             logger.error("Translation API response parsing error.")
             raise APIClientError(status_code=503, detail="Translation API returned an unexpected response format.")
     
-    def clear_cache(self):
+    async def clear_cache(self):
         """Clear the translation cache. Useful for testing."""
-        self._cache.clear()
+        keys = await self.redis.keys("translation:*")
+        if keys:
+            await self.redis.delete(*keys)
+    
+    async def close(self):
+        """Close Redis connection (call on app shutdown)."""
+        await self.redis.close()

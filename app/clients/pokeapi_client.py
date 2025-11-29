@@ -1,8 +1,10 @@
 import httpx
-from typing import Dict
+import json
+from typing import Optional
 from app.models import PokemonSpeciesData
 from fastapi import HTTPException
 import logging
+import redis.asyncio as aioredis
 
 logger = logging.getLogger(__name__)
 
@@ -13,24 +15,24 @@ class APIClientError(HTTPException):
 
 class PokeAPIClient:
     BASE_URL = "https://pokeapi.co/api/v2"
+    CACHE_TTL = 3600  # 1 hour
 
-    def __init__(self):
+    def __init__(self, redis_url: str = "redis://localhost:6379"):
         self.client = httpx.AsyncClient(base_url=self.BASE_URL, timeout=5.0)
-        # Simple in-memory cache: {pokemon_name: raw_species_data}
-        # 1 - Simple - Just a dictionary, no complex async cache libraries needed
-        # 2 - Works with async - No coroutine reuse issues
-        # 3 - Only caches successes - Exceptions prevent caching, so rate limits trigger retries
-        self._cache: Dict[str, dict] = {}
+        # Redis client instead of dictionary
+        self.redis = aioredis.from_url(redis_url, decode_responses=True)
 
     async def _fetch_species_data(self, pokemon_name: str) -> dict:
         """Internal method to fetch raw species data with caching and error handling."""
         # Normalize the name to lowercase for consistent caching
         normalized_name = pokemon_name.lower()
         
-        # Check cache first
-        if normalized_name in self._cache:
+        # Check cache first (Redis instead of dict)
+        cache_key = f"pokemon:species:{normalized_name}"
+        cached_data = await self.redis.get(cache_key)
+        if cached_data:
             logger.info(f"Cache hit for Pokemon: {normalized_name}")
-            return self._cache[normalized_name]
+            return json.loads(cached_data)
         
         # Cache miss - make network call
         logger.info(f"Cache miss for Pokemon: {normalized_name}")
@@ -42,7 +44,7 @@ class PokeAPIClient:
             data = response.json()
             
             # Store in cache (only successful results get cached)
-            self._cache[normalized_name] = data
+            await self.redis.setex(cache_key, self.CACHE_TTL, json.dumps(data))
             return data
         
         except httpx.HTTPStatusError as e:
@@ -77,6 +79,12 @@ class PokeAPIClient:
             is_legendary=data['is_legendary']
         )
     
-    def clear_cache(self):
+    async def clear_cache(self):
         """Clear the Pokemon species cache. Useful for testing."""
-        self._cache.clear()
+        keys = await self.redis.keys("pokemon:species:*")
+        if keys:
+            await self.redis.delete(*keys)
+    
+    async def close(self):
+        """Close Redis connection (call on app shutdown)."""
+        await self.redis.close()
