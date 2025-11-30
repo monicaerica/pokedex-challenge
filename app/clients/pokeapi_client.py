@@ -1,3 +1,4 @@
+import os
 import httpx
 import json
 from typing import Optional
@@ -17,9 +18,12 @@ class PokeAPIClient:
     BASE_URL = "https://pokeapi.co/api/v2"
     CACHE_TTL = 3600  # 1 hour
 
-    def __init__(self, redis_url: str = "redis://localhost:6379"):
+    def __init__(self, redis_url: str = None):
         self.client = httpx.AsyncClient(base_url=self.BASE_URL, timeout=5.0)
         # Redis client instead of dictionary
+        # Use environment variable if redis_url not provided
+        if redis_url is None:
+            redis_url = os.getenv("REDIS_URL", "redis://localhost:6379")
         self.redis = aioredis.from_url(redis_url, decode_responses=True)
 
     async def _fetch_species_data(self, pokemon_name: str) -> dict:
